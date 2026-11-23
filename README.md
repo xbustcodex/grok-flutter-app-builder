@@ -1,107 +1,78 @@
 # Grok Flutter App Builder
 
-A specialized **system prompt + local CLI tool** that turns Grok into a powerful Flutter app generator for **Android + Desktop (Windows/macOS/Linux)**.
+Turn Grok into a Flutter app generator for **Android + Desktop**.
 
-## What you get
+This is currently a **source-code generator + helper**, not a fully automatic one-click APK/EXE factory.
 
-1. **System Prompt** (`flutter_app_builder_system_prompt.md`)  
-   Copy-paste into any Grok chat (or set as the system message in the API) to turn Grok into a dedicated Flutter app architect.
+## Current status
 
-2. **Local CLI** (`flutter_app_builder_cli.py`)  
-   A Python script that calls the official xAI Grok API, generates a complete Flutter project from a natural-language description, and writes all the files to disk.
+| Area                              | Status                                      |
+|-----------------------------------|---------------------------------------------|
+| Python CLI                        | Implemented                                 |
+| Gradio web UI                     | Implemented                                 |
+| Grok API integration              | Implemented (requires paid API key)         |
+| Flutter source generation         | Implemented                                 |
+| Path sanitization / safety        | Implemented                                 |
+| Basic build verification helper   | Implemented (`build_helper.py`)             |
+| Automatic Windows EXE compilation | Partial – helper attempts `flutter build`   |
+| Automatic Android APK compilation | Partial – helper attempts `flutter build`   |
+| Full signing & store packaging    | Not implemented (you finish these steps)    |
+| Multi-framework (RN, Electron…)   | Roadmap only                                |
 
-3. **Web UI** (`web_ui.py`)  
-   Simple Gradio interface for the same functionality.
+## Important notes
 
-## Quick Start (CLI)
+1. **API cost** – The CLI and web UI call the official xAI API (`api.x.ai`). This is separate from any Grok website / X subscription and is billed by token usage. Check [console.x.ai](https://console.x.ai) for pricing.
 
-### 1. Get an API key
-- Go to https://console.x.ai
-- Create an API key
-- Export it:
+2. **Compilation** – Fully automatic production-ready APKs and signed Windows executables require a properly configured Flutter + Android SDK + Visual Studio environment on the machine that runs the build. The included `build_helper.py` will attempt the builds and give clear feedback, but it cannot magically install missing SDKs or signing keys for you.
 
-```bash
-export XAI_API_KEY=xai-your-key-here
-```
+3. **Security** – Generated file paths are sanitized to prevent directory traversal. The Gradio UI binds to `127.0.0.1` by default.
 
-### 2. Install dependency
-```bash
-pip install openai
-```
-
-### 3. Run the builder
-
-**One-liner:**
-```bash
-python flutter_app_builder_cli.py "A beautiful habit tracker with streaks, dark mode, and local storage"
-```
-
-**Interactive (multi-line description):**
-```bash
-python flutter_app_builder_cli.py --interactive
-```
-
-**Named project:**
-```bash
-python flutter_app_builder_cli.py --name habit_tracker "Habit tracker with daily goals and charts"
-```
-
-### 4. Run the generated app
-```bash
-cd habit_tracker          # or whatever the folder is called
-flutter pub get
-flutter run -d windows    # or macos / linux / chrome / android
-```
-
-## Using the System Prompt only (no CLI)
-
-1. Open `flutter_app_builder_system_prompt.md`
-2. Copy the entire prompt under the horizontal line
-3. Paste it as the **System Prompt** in:
-   - https://grok.x.ai (or the chat interface you use)
-   - Any OpenAI-compatible client pointed at `https://api.x.ai/v1`
-4. Then just say:  
-   “Build me a Flutter todo app with categories and cloud sync using Firebase”
-
-Grok will reply with a full project structure + every source file.
-
-## Recommended models
-- `grok-4.7` (default) – strongest overall, especially for code
-- `grok-4.3` – cheaper & still excellent for most apps
-- `grok-build-0.1` – specialized coding model (if available)
-
-## Tips for best results
-- Be specific about features, design style, and whether you need auth / offline / charts / etc.
-- After the first generation, you can continue the conversation: “Add a settings screen with theme switcher” or “Make the list reorderable”.
-- The CLI always saves the raw Grok response as `GROK_RESPONSE.md` inside the project folder in case any file extraction missed something.
-
-## Example prompts that work well
-- “A minimalist expense tracker with categories, monthly charts, and CSV export”
-- “A desktop-first markdown notes app with folders, search, and live preview”
-- “A cross-platform pomodoro timer with task list, stats, and system tray support”
-- “A simple Instagram-style photo gallery that works offline and supports desktop drag-and-drop”
-
-## Web UI (Gradio)
-
-There is also a simple local web interface:
+## Quick start
 
 ```bash
-pip install gradio openai
+# 1. API key
 export XAI_API_KEY=xai-...
-python web_ui.py
+
+# 2. Dependencies
+pip install -r requirements.txt
+
+# 3. Generate an app
+python flutter_app_builder_cli.py --name habit_tracker "Habit tracker with streaks, dark mode and local storage"
+
+# 4. Enter the project and verify / build
+cd habit_tracker
+python ../build_helper.py --all          # or --android / --windows
+flutter run -d windows                   # or android / chrome
 ```
 
-Then open the URL shown in the terminal (usually http://127.0.0.1:7860).
+### Web UI
 
-## Multi-stack support (roadmap)
+```bash
+python web_ui.py
+# then open http://127.0.0.1:7860
+```
 
-The current focus is **Flutter** (best single-codebase experience for Android + Desktop).  
-Future versions will add optional generators for:
+### System prompt only
 
-- React Native / Expo
-- Electron + React or Tauri
-- Pure native (Kotlin Multiplatform / SwiftUI)
+Copy the content of `flutter_app_builder_system_prompt.md` into any Grok chat as the system message.
 
-You can already ask Grok (using the system prompt) to generate those stacks manually.
+## Files
 
-Enjoy building!
+- `flutter_app_builder_cli.py` – Command-line generator
+- `web_ui.py` – Local Gradio interface (localhost only)
+- `build_helper.py` – Attempt `flutter pub get`, analyze, and platform builds
+- `flutter_app_builder_system_prompt.md` – Persona / system prompt
+- `requirements.txt` – `openai` + `gradio`
+
+## Roadmap (honest)
+
+Priority order:
+
+1. Better validation & automatic repair loops (feed build errors back to Grok)
+2. More reliable file extraction + project scaffolding
+3. Optional support for other stacks (React Native, Tauri, etc.)
+4. Deeper integration with signing / packaging once the core generation is solid
+
+## Contributing / feedback
+
+Open issues or PRs on this repo. The most valuable feedback is real build failures from generated projects so the prompt and helpers can be improved.

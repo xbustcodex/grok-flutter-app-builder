@@ -107,10 +107,26 @@ def call_grok(client: OpenAI, user_message: str, model: str = "grok-4.7") -> str
     return response.choices[0].message.content or ""
 
 
+def _safe_rel_path(raw: str) -> str | None:
+    """Sanitize a path coming from the model. Reject anything that could escape the project root."""
+    path = raw.strip().lstrip("./").replace("\\", "/")
+    if not path or path.startswith("/") or ".." in path.split("/") or "\0" in path:
+        return None
+    allowed_prefixes = ("lib/", "test/", "assets/", "android/", "ios/", "windows/", "macos/", "linux/", "web/")
+    allowed_files = {
+        "pubspec.yaml", "README.md", "analysis_options.yaml",
+        "pubspec.lock", ".gitignore", "LICENSE", "CHANGELOG.md"
+    }
+    if path in allowed_files or any(path.startswith(p) for p in allowed_prefixes) or path.endswith(
+        (".dart", ".yaml", ".yml", ".json", ".md", ".xml", ".gradle", ".kt", ".swift", ".plist", ".entitlements")
+    ):
+        return path
+    return None
+
+
 def extract_files(response: str) -> dict[str, str]:
     """Parse the response and extract path → content from fenced code blocks.
-    More robust: handles both // path and # path comments, and also
-    language tags that contain the path (some models do that).
+    Includes path sanitization to prevent directory traversal.
     """
     files = {}
 
@@ -123,23 +139,24 @@ def extract_files(response: str) -> dict[str, str]:
     )
 
     for match in pattern.finditer(response):
-        path = match.group(1).strip().lstrip("./")
+        raw = match.group(1).strip()
         content = match.group(2).rstrip() + "\n"
-        if path and (path.startswith("lib/") or "/" in path or path.endswith((".dart", ".yaml", ".md", ".json"))):
-            files[path] = content
+        safe = _safe_rel_path(raw)
+        if safe:
+            files[safe] = content
 
-    # Secondary pattern: sometimes the path is put in the language tag
-    # e.g. ```dart:lib/main.dart
+    # Secondary pattern: path sometimes appears in the language tag
     alt_pattern = re.compile(
         r"```(?:dart|yaml|md)?[:\s]+([^\n`]+)\n"
         r"(.*?)\n```",
         re.DOTALL | re.IGNORECASE,
     )
     for match in alt_pattern.finditer(response):
-        path = match.group(1).strip().lstrip("./")
+        raw = match.group(1).strip()
         content = match.group(2).rstrip() + "\n"
-        if path and path not in files and (path.startswith("lib/") or path.endswith((".dart", ".yaml", ".md"))):
-            files[path] = content
+        safe = _safe_rel_path(raw)
+        if safe and safe not in files:
+            files[safe] = content
 
     if not files:
         print("Warning: Could not auto-extract files cleanly. The full response will be saved as GROK_RESPONSE.md")
@@ -157,7 +174,11 @@ def write_project(project_dir: Path, files: dict[str, str], full_response: str):
         return
 
     for rel_path, content in files.items():
-        target = project_dir / rel_path
+        target = (project_dir / rel_path).resolve()
+        # Final guard against path traversal
+        if not str(target).startswith(str(project_dir.resolve())):
+            print(f"  ⚠ Skipping unsafe path: {rel_path}")
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         print(f"  ✓ {rel_path}")

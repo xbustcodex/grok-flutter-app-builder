@@ -71,6 +71,22 @@ def get_client() -> OpenAI:
     return OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
 
 
+def _safe_rel_path(raw: str) -> str | None:
+    """Sanitize a path coming from the model. Reject anything that could escape the project root."""
+    path = raw.strip().lstrip("./").replace("\\", "/")
+    # Disallow absolute paths, parent traversal, null bytes, and weird characters
+    if not path or path.startswith("/") or ".." in path.split("/") or "\0" in path:
+        return None
+    allowed_prefixes = ("lib/", "test/", "assets/", "android/", "ios/", "windows/", "macos/", "linux/", "web/")
+    allowed_files = {
+        "pubspec.yaml", "README.md", "analysis_options.yaml",
+        "pubspec.lock", ".gitignore", "LICENSE", "CHANGELOG.md"
+    }
+    if path in allowed_files or any(path.startswith(p) for p in allowed_prefixes) or path.endswith((".dart", ".yaml", ".yml", ".json", ".md", ".xml", ".gradle", ".kt", ".swift", ".plist", ".entitlements")):
+        return path
+    return None
+
+
 def extract_files(response: str) -> dict[str, str]:
     files = {}
     pattern = re.compile(
@@ -80,10 +96,11 @@ def extract_files(response: str) -> dict[str, str]:
         re.DOTALL | re.IGNORECASE,
     )
     for match in pattern.finditer(response):
-        path = match.group(1).strip().lstrip("./")
+        raw_path = match.group(1).strip()
         content = match.group(2).rstrip() + "\n"
-        if path.startswith("lib/") or path in ("pubspec.yaml", "README.md", "analysis_options.yaml") or "/" in path:
-            files[path] = content
+        safe = _safe_rel_path(raw_path)
+        if safe:
+            files[safe] = content
     return files
 
 
@@ -139,7 +156,9 @@ Start generating now."""
 
     file_list = []
     for rel_path, file_content in files.items():
-        target = tmpdir / rel_path
+        target = (tmpdir / rel_path).resolve()
+        if not str(target).startswith(str(tmpdir.resolve())):
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(file_content, encoding="utf-8")
         file_list.append(rel_path)
@@ -210,4 +229,5 @@ with gr.Blocks(title="Grok Flutter App Builder", theme=gr.themes.Soft()) as demo
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    # Bind to localhost only by default for safety. Use --share or change to 0.0.0.0 if you need network access.
+    demo.launch(server_name="127.0.0.1", server_port=7860, share=False)

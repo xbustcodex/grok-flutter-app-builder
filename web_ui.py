@@ -3,10 +3,10 @@
 Grok Flutter App Builder - Simple Local Web UI (Gradio)
 
 Run with:
-  export XAI_API_KEY=xai-...
+  export XAI_API_KEY=xai-...              # or OPENROUTER_API_KEY=sk-or-...
   python web_ui.py
 
-Then open the local URL shown in the terminal.
+Then open the local URL shown in the terminal (http://127.0.0.1:7860).
 """
 
 import os
@@ -64,17 +64,48 @@ Always generate a complete, self-contained Flutter project that works after `flu
 """
 
 
-def get_client() -> OpenAI:
-    api_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
-    if not api_key:
-        raise ValueError("XAI_API_KEY environment variable is not set")
-    return OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+def get_client(provider: str = "auto") -> tuple:
+    """
+    Returns (client, resolved_provider).
+    provider: "xai" | "openrouter" | "auto"
+    """
+    provider = (provider or os.environ.get("GROK_PROVIDER") or "auto").lower().strip()
+    xai_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
+    or_key = os.environ.get("OPENROUTER_API_KEY")
+
+    if provider == "auto":
+        if or_key:
+            provider = "openrouter"
+        elif xai_key:
+            provider = "xai"
+        else:
+            raise ValueError(
+                "No API key found. Set XAI_API_KEY or OPENROUTER_API_KEY "
+                "(optional: GROK_PROVIDER=xai|openrouter)"
+            )
+
+    if provider == "openrouter":
+        if not or_key:
+            raise ValueError("OPENROUTER_API_KEY is not set. Get one at https://openrouter.ai/keys")
+        client = OpenAI(
+            api_key=or_key,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": "https://github.com/xbustcodex/grok-flutter-app-builder",
+                "X-Title": "Grok Flutter App Builder",
+            },
+        )
+        return client, "openrouter"
+
+    if not xai_key:
+        raise ValueError("XAI_API_KEY is not set. Get one at https://console.x.ai")
+    client = OpenAI(api_key=xai_key, base_url="https://api.x.ai/v1")
+    return client, "xai"
 
 
 def _safe_rel_path(raw: str) -> str | None:
     """Sanitize a path coming from the model. Reject anything that could escape the project root."""
     path = raw.strip().lstrip("./").replace("\\", "/")
-    # Disallow absolute paths, parent traversal, null bytes, and weird characters
     if not path or path.startswith("/") or ".." in path.split("/") or "\0" in path:
         return None
     allowed_prefixes = ("lib/", "test/", "assets/", "android/", "ios/", "windows/", "macos/", "linux/", "web/")
@@ -104,15 +135,22 @@ def extract_files(response: str) -> dict[str, str]:
     return files
 
 
-def generate_app(description: str, project_name: str, model: str, progress=gr.Progress()):
+def generate_app(description: str, project_name: str, model: str, provider: str = "auto", progress=gr.Progress()):
     if not description.strip():
         return "Please enter an app description.", None, ""
 
     progress(0.1, desc="Calling Grok...")
     try:
-        client = get_client()
+        client, resolved_provider = get_client(provider)
     except ValueError as e:
         return str(e), None, ""
+
+    # Resolve model name for the chosen provider
+    if not model:
+        model = "x-ai/grok-4.7" if resolved_provider == "openrouter" else "grok-4.7"
+    elif resolved_provider == "openrouter" and not model.startswith(("x-ai/", "openrouter/")):
+        if model.startswith("grok"):
+            model = f"x-ai/{model}"
 
     full_prompt = f"""Build a complete Flutter application for Android and Desktop based on this description:
 
@@ -131,7 +169,7 @@ Start generating now."""
 
     try:
         response = client.chat.completions.create(
-            model=model or "grok-4.7",
+            model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": full_prompt},
@@ -148,7 +186,6 @@ Start generating now."""
     name = project_name.strip() or "flutter_app"
     name = re.sub(r"[^a-zA-Z0-9_]", "_", name).lower() or "flutter_app"
 
-    # Create a temporary directory with the project
     tmpdir = Path(tempfile.mkdtemp(prefix=f"grok_{name}_"))
     files = extract_files(content)
 
@@ -166,6 +203,8 @@ Start generating now."""
     progress(1.0, desc="Done!")
 
     summary = f"""### Project generated successfully!
+
+**Provider:** `{resolved_provider}`  |  **Model:** `{model}`
 
 **Folder:** `{tmpdir}`
 
@@ -193,7 +232,7 @@ with gr.Blocks(title="Grok Flutter App Builder", theme=gr.themes.Soft()) as demo
     # 🚀 Grok Flutter App Builder
     Describe any Android + Desktop app and Grok will generate a complete Flutter project for you.
     
-    **Requires** `XAI_API_KEY` environment variable (get one at [console.x.ai](https://console.x.ai)).
+    **Requires** an API key: set `XAI_API_KEY` (official) or `OPENROUTER_API_KEY` (OpenRouter).
     """)
 
     with gr.Row():
@@ -204,10 +243,25 @@ with gr.Blocks(title="Grok Flutter App Builder", theme=gr.themes.Soft()) as demo
                 lines=5,
             )
             project_name = gr.Textbox(label="Project Name (optional)", placeholder="habit_tracker")
+            provider = gr.Dropdown(
+                choices=["auto", "xai", "openrouter"],
+                value="auto",
+                label="Provider",
+                info="auto = prefer OpenRouter if key is set, else official xAI",
+            )
             model = gr.Dropdown(
-                choices=["grok-4.7", "grok-4.3", "grok-4.6", "grok-build-0.1"],
+                choices=[
+                    "grok-4.7",
+                    "grok-4.3",
+                    "grok-4.6",
+                    "grok-build-0.1",
+                    "x-ai/grok-4.7",
+                    "x-ai/grok-4.3",
+                    "x-ai/grok-4.6",
+                ],
                 value="grok-4.7",
                 label="Model",
+                info="Short names work for both providers; x-ai/ prefix is for OpenRouter",
             )
             btn = gr.Button("Generate App", variant="primary")
         with gr.Column(scale=1):
@@ -224,10 +278,10 @@ with gr.Blocks(title="Grok Flutter App Builder", theme=gr.themes.Soft()) as demo
 
     btn.click(
         fn=generate_app,
-        inputs=[description, project_name, model],
+        inputs=[description, project_name, model, provider],
         outputs=[output_md, output_path, full_response],
     )
 
 if __name__ == "__main__":
-    # Bind to localhost only by default for safety. Use --share or change to 0.0.0.0 if you need network access.
+    # Bind to localhost only by default for safety.
     demo.launch(server_name="127.0.0.1", server_port=7860, share=False)

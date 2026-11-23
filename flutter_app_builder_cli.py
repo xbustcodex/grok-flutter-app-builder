@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
 Grok Flutter App Builder CLI
-A local tool that uses the xAI Grok API (or OpenRouter) to generate complete Flutter apps
-(Android + Desktop) from a natural-language description.
+Generates complete Flutter apps (Android + Desktop) from natural language
+using xAI, OpenRouter, Together, Fireworks, or any OpenAI-compatible endpoint.
 
 Requirements:
   pip install openai
-  export XAI_API_KEY=xai-...              # official xAI  (https://console.x.ai)
-  # or
-  export OPENROUTER_API_KEY=sk-or-v1-...  # OpenRouter   (https://openrouter.ai/keys)
+  export XAI_API_KEY=...  or  OPENROUTER_API_KEY=...  or  TOGETHER_API_KEY=...
+  or  BASE_URL=... + API_KEY=...  (generic)
 
-Usage examples:
-  python flutter_app_builder_cli.py "A todo list app with dark mode and local storage"
-  python flutter_app_builder_cli.py --interactive
+Examples:
+  python flutter_app_builder_cli.py "A todo app with dark mode"
   python flutter_app_builder_cli.py --provider openrouter --model x-ai/grok-4.7 "..."
-  python flutter_app_builder_cli.py --name my_notes "Simple notes app with categories"
+  python flutter_app_builder_cli.py --name myapp --build windows --repair "..."
 """
 
 import argparse
@@ -82,57 +80,14 @@ Always generate a complete, self-contained Flutter project that works after `flu
 """
 
 
-def get_client(provider: str | None = None) -> tuple:
-    """
-    Returns (client, resolved_provider).
-
-    Supported providers:
-      - xai        → official https://api.x.ai/v1   (env: XAI_API_KEY)
-      - openrouter → https://openrouter.ai/api/v1  (env: OPENROUTER_API_KEY)
-      - auto       → prefer OpenRouter if key present, else xAI
-    """
-    provider = (provider or os.environ.get("GROK_PROVIDER") or "auto").lower().strip()
-
-    xai_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
-    or_key = os.environ.get("OPENROUTER_API_KEY")
-
-    if provider == "auto":
-        if or_key:
-            provider = "openrouter"
-        elif xai_key:
-            provider = "xai"
-        else:
-            print("Error: No API key found.")
-            print("  Set XAI_API_KEY          (official xAI)  or")
-            print("  Set OPENROUTER_API_KEY   (OpenRouter)")
-            print("  Optional: GROK_PROVIDER=xai|openrouter")
-            sys.exit(1)
-
-    if provider == "openrouter":
-        if not or_key:
-            print("Error: OPENROUTER_API_KEY is not set")
-            print("Get a key at: https://openrouter.ai/keys")
-            sys.exit(1)
-        client = OpenAI(
-            api_key=or_key,
-            base_url="https://openrouter.ai/api/v1",
-            default_headers={
-                "HTTP-Referer": "https://github.com/xbustcodex/grok-flutter-app-builder",
-                "X-Title": "Grok Flutter App Builder",
-            },
-        )
-        return client, "openrouter"
-
-    # default / xai
-    if not xai_key:
-        print("Error: XAI_API_KEY is not set")
-        print("Get a key at: https://console.x.ai")
-        sys.exit(1)
-    client = OpenAI(
-        api_key=xai_key,
-        base_url="https://api.x.ai/v1",
-    )
-    return client, "xai"
+# Shared provider logic (xAI, OpenRouter, Together, Fireworks, generic)
+try:
+    from providers import get_client, resolve_model
+except ImportError:
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).parent))
+    from providers import get_client, resolve_model
 
 
 def call_grok(client: OpenAI, user_message: str, model: str = "grok-4.7") -> str:
@@ -150,7 +105,6 @@ def call_grok(client: OpenAI, user_message: str, model: str = "grok-4.7") -> str
 
 
 def _safe_rel_path(raw: str) -> str | None:
-    """Sanitize a path coming from the model. Reject anything that could escape the project root."""
     path = raw.strip().lstrip("./").replace("\\", "/")
     if not path or path.startswith("/") or ".." in path.split("/") or "\0" in path:
         return None
@@ -167,18 +121,13 @@ def _safe_rel_path(raw: str) -> str | None:
 
 
 def extract_files(response: str) -> dict[str, str]:
-    """Parse the response and extract path → content from fenced code blocks.
-    Includes path sanitization to prevent directory traversal.
-    """
     files = {}
-
     pattern = re.compile(
         r"```(?:dart|yaml|xml|json|md|txt|gradle|kotlin|swift|html)?\s*\n"
         r"(?://|#)\s*([^\n]+)\n"
         r"(.*?)\n```",
         re.DOTALL | re.IGNORECASE,
     )
-
     for match in pattern.finditer(response):
         raw = match.group(1).strip()
         content = match.group(2).rstrip() + "\n"
@@ -205,7 +154,6 @@ def extract_files(response: str) -> dict[str, str]:
 
 def write_project(project_dir: Path, files: dict[str, str], full_response: str):
     project_dir.mkdir(parents=True, exist_ok=True)
-
     (project_dir / "GROK_RESPONSE.md").write_text(full_response, encoding="utf-8")
 
     if not files:
@@ -250,48 +198,37 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate Flutter (Android + Desktop) apps with Grok"
     )
-    parser.add_argument(
-        "description",
-        nargs="?",
-        help="Natural language description of the app",
-    )
-    parser.add_argument(
-        "--name", "-n",
-        help="Project folder name (default: derived from description or 'flutter_app')",
-    )
-    parser.add_argument(
-        "--interactive", "-i",
-        action="store_true",
-        help="Interactive mode – type a multi-line description",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Model ID (default: grok-4.7 for xAI, x-ai/grok-4.7 for OpenRouter)",
-    )
+    parser.add_argument("description", nargs="?", help="Natural language description of the app")
+    parser.add_argument("--name", "-n", help="Project folder name")
+    parser.add_argument("--interactive", "-i", action="store_true", help="Interactive mode")
+    parser.add_argument("--model", default=None, help="Model ID")
     parser.add_argument(
         "--provider",
-        choices=["auto", "xai", "openrouter"],
+        choices=["auto", "xai", "openrouter", "together", "fireworks", "generic"],
         default="auto",
-        help="API provider: xai (official), openrouter, or auto (default)",
+        help="API provider (default: auto)",
     )
     parser.add_argument(
-        "--out", "-o",
-        default=".",
-        help="Parent directory for the new project (default: current dir)",
+        "--build",
+        choices=["windows", "android", "linux", "macos", "web", "all"],
+        default=None,
+        help="After generation, automatically run build_helper for this platform",
     )
+    parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="If --build is set and the build fails, attempt a Grok repair pass",
+    )
+    parser.add_argument("--out", "-o", default=".", help="Parent directory for the new project")
     args = parser.parse_args()
 
-    client, provider = get_client(args.provider)
+    try:
+        client, provider, default_model = get_client(args.provider)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
-    # Resolve model name depending on provider
-    model = args.model
-    if not model:
-        model = "x-ai/grok-4.7" if provider == "openrouter" else "grok-4.7"
-    elif provider == "openrouter" and not model.startswith(("x-ai/", "openrouter/")):
-        if model.startswith("grok"):
-            model = f"x-ai/{model}"
-
+    model = resolve_model(args.model, provider)
     print(f"Provider: {provider}  |  Model: {model}")
 
     if args.interactive or not args.description:
@@ -334,6 +271,16 @@ Start generating now."""
     print("3. flutter run -d windows   # or macos / linux / chrome / android")
     print("=" * 60)
     print("\nTip: Open GROK_RESPONSE.md inside the folder if any files are missing.")
+
+    if args.build:
+        print("\n=== Running build_helper ===")
+        import subprocess
+        cmd = [sys.executable, str(Path(__file__).parent / "build_helper.py"), str(project_dir),
+               "--platform", args.build]
+        if args.repair:
+            cmd.append("--repair")
+            cmd.extend(["--provider", args.provider])
+        subprocess.call(cmd)
 
 
 if __name__ == "__main__":

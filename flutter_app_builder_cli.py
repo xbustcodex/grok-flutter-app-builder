@@ -108,34 +108,41 @@ def call_grok(client: OpenAI, user_message: str, model: str = "grok-4.7") -> str
 
 
 def extract_files(response: str) -> dict[str, str]:
-    """Parse the response and extract path → content from fenced code blocks."""
+    """Parse the response and extract path → content from fenced code blocks.
+    More robust: handles both // path and # path comments, and also
+    language tags that contain the path (some models do that).
+    """
     files = {}
-    # Match ```lang\n// path\n content ``` or ```lang\n# path\n content ```
+
+    # Primary pattern: comment on first line of the code block
     pattern = re.compile(
-        r"```(?:dart|yaml|xml|json|md|txt|gradle|kotlin|swift)?\s*\n"
-        r"(?://|#)\s*([^\n]+)\n"   # the path comment
+        r"```(?:dart|yaml|xml|json|md|txt|gradle|kotlin|swift|html)?\s*\n"
+        r"(?://|#)\s*([^\n]+)\n"          # path comment
         r"(.*?)\n```",
         re.DOTALL | re.IGNORECASE,
     )
 
     for match in pattern.finditer(response):
-        path = match.group(1).strip()
+        path = match.group(1).strip().lstrip("./")
         content = match.group(2).rstrip() + "\n"
-        # Clean common prefixes
-        path = path.lstrip("./")
-        if path.startswith("lib/") or path in ("pubspec.yaml", "README.md", "analysis_options.yaml"):
-            files[path] = content
-        elif "/" in path or path.endswith((".dart", ".yaml", ".md")):
+        if path and (path.startswith("lib/") or "/" in path or path.endswith((".dart", ".yaml", ".md", ".json"))):
             files[path] = content
 
-    # Fallback: try a looser pattern if nothing found
+    # Secondary pattern: sometimes the path is put in the language tag
+    # e.g. ```dart:lib/main.dart
+    alt_pattern = re.compile(
+        r"```(?:dart|yaml|md)?[:\s]+([^\n`]+)\n"
+        r"(.*?)\n```",
+        re.DOTALL | re.IGNORECASE,
+    )
+    for match in alt_pattern.finditer(response):
+        path = match.group(1).strip().lstrip("./")
+        content = match.group(2).rstrip() + "\n"
+        if path and path not in files and (path.startswith("lib/") or path.endswith((".dart", ".yaml", ".md"))):
+            files[path] = content
+
     if not files:
-        loose = re.compile(
-            r"```(?:dart|yaml)?\s*\n(.*?)```",
-            re.DOTALL,
-        )
-        # Not ideal, but better than nothing – user can still copy manually
-        print("Warning: Could not auto-extract files cleanly. The full response will be saved.")
+        print("Warning: Could not auto-extract files cleanly. The full response will be saved as GROK_RESPONSE.md")
     return files
 
 

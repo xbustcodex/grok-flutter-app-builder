@@ -10,6 +10,9 @@ A specialized **system prompt + local CLI tool** that turns Grok into a powerful
 2. **Local CLI** (`flutter_app_builder_cli.py`)  
    A Python script that calls the official xAI Grok API, generates a complete Flutter project from a natural-language description, and writes all the files to disk.
 
+3. **Web UI** (`web_ui.py`)  
+   Simple Gradio interface for the same functionality.
+
 ## Quick Start (CLI)
 
 ### 1. Get an API key
@@ -77,5 +80,28 @@ Grok will reply with a full project structure + every source file.
 - “A desktop-first markdown notes app with folders, search, and live preview”
 - “A cross-platform pomodoro timer with task list, stats, and system tray support”
 - “A simple Instagram-style photo gallery that works offline and supports desktop drag-and-drop”
+
+## Web UI (Gradio)
+
+There is also a simple local web interface:
+
+```bash
+pip install gradio openai
+export XAI_API_KEY=xai-...
+python web_ui.py
+```
+
+Then open the URL shown in the terminal (usually http://127.0.0.1:7860).
+
+## Multi-stack support (roadmap)
+
+The current focus is **Flutter** (best single-codebase experience for Android + Desktop).  
+Future versions will add optional generators for:
+
+- React Native / Expo
+- Electron + React or Tauri
+- Pure native (Kotlin Multiplatform / SwiftUI)
+
+You can already ask Grok (using the system prompt) to generate those stacks manually.
 
 Enjoy building!

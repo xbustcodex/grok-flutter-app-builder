@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
 Grok Flutter App Builder CLI
-A local tool that uses the xAI Grok API to generate complete Flutter apps
+A local tool that uses the xAI Grok API (or OpenRouter) to generate complete Flutter apps
 (Android + Desktop) from a natural-language description.
 
 Requirements:
   pip install openai
-  export XAI_API_KEY=your_key_here   # get one at https://console.x.ai
+  export XAI_API_KEY=xai-...              # official xAI  (https://console.x.ai)
+  # or
+  export OPENROUTER_API_KEY=sk-or-v1-...  # OpenRouter   (https://openrouter.ai/keys)
 
 Usage examples:
   python flutter_app_builder_cli.py "A todo list app with dark mode and local storage"
   python flutter_app_builder_cli.py --interactive
-  python flutter_app_builder_cli.py --name my_notes --desc "Simple notes app with categories"
+  python flutter_app_builder_cli.py --provider openrouter --model x-ai/grok-4.7 "..."
+  python flutter_app_builder_cli.py --name my_notes "Simple notes app with categories"
 """
 
 import argparse
@@ -79,18 +82,57 @@ Always generate a complete, self-contained Flutter project that works after `flu
 """
 
 
-def get_client() -> OpenAI:
-    api_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
-    if not api_key:
-        print("Error: Set the environment variable XAI_API_KEY")
-        print("Get a key at: https://console.x.ai")
-        print("Then:  export XAI_API_KEY=xai-...")
-        sys.exit(1)
+def get_client(provider: str | None = None) -> tuple:
+    """
+    Returns (client, resolved_provider).
 
-    return OpenAI(
-        api_key=api_key,
+    Supported providers:
+      - xai        → official https://api.x.ai/v1   (env: XAI_API_KEY)
+      - openrouter → https://openrouter.ai/api/v1  (env: OPENROUTER_API_KEY)
+      - auto       → prefer OpenRouter if key present, else xAI
+    """
+    provider = (provider or os.environ.get("GROK_PROVIDER") or "auto").lower().strip()
+
+    xai_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
+    or_key = os.environ.get("OPENROUTER_API_KEY")
+
+    if provider == "auto":
+        if or_key:
+            provider = "openrouter"
+        elif xai_key:
+            provider = "xai"
+        else:
+            print("Error: No API key found.")
+            print("  Set XAI_API_KEY          (official xAI)  or")
+            print("  Set OPENROUTER_API_KEY   (OpenRouter)")
+            print("  Optional: GROK_PROVIDER=xai|openrouter")
+            sys.exit(1)
+
+    if provider == "openrouter":
+        if not or_key:
+            print("Error: OPENROUTER_API_KEY is not set")
+            print("Get a key at: https://openrouter.ai/keys")
+            sys.exit(1)
+        client = OpenAI(
+            api_key=or_key,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": "https://github.com/xbustcodex/grok-flutter-app-builder",
+                "X-Title": "Grok Flutter App Builder",
+            },
+        )
+        return client, "openrouter"
+
+    # default / xai
+    if not xai_key:
+        print("Error: XAI_API_KEY is not set")
+        print("Get a key at: https://console.x.ai")
+        sys.exit(1)
+    client = OpenAI(
+        api_key=xai_key,
         base_url="https://api.x.ai/v1",
     )
+    return client, "xai"
 
 
 def call_grok(client: OpenAI, user_message: str, model: str = "grok-4.7") -> str:
@@ -130,10 +172,9 @@ def extract_files(response: str) -> dict[str, str]:
     """
     files = {}
 
-    # Primary pattern: comment on first line of the code block
     pattern = re.compile(
         r"```(?:dart|yaml|xml|json|md|txt|gradle|kotlin|swift|html)?\s*\n"
-        r"(?://|#)\s*([^\n]+)\n"          # path comment
+        r"(?://|#)\s*([^\n]+)\n"
         r"(.*?)\n```",
         re.DOTALL | re.IGNORECASE,
     )
@@ -145,7 +186,6 @@ def extract_files(response: str) -> dict[str, str]:
         if safe:
             files[safe] = content
 
-    # Secondary pattern: path sometimes appears in the language tag
     alt_pattern = re.compile(
         r"```(?:dart|yaml|md)?[:\s]+([^\n`]+)\n"
         r"(.*?)\n```",
@@ -166,7 +206,6 @@ def extract_files(response: str) -> dict[str, str]:
 def write_project(project_dir: Path, files: dict[str, str], full_response: str):
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    # Always save the raw response for reference
     (project_dir / "GROK_RESPONSE.md").write_text(full_response, encoding="utf-8")
 
     if not files:
@@ -175,7 +214,6 @@ def write_project(project_dir: Path, files: dict[str, str], full_response: str):
 
     for rel_path, content in files.items():
         target = (project_dir / rel_path).resolve()
-        # Final guard against path traversal
         if not str(target).startswith(str(project_dir.resolve())):
             print(f"  ⚠ Skipping unsafe path: {rel_path}")
             continue
@@ -228,8 +266,14 @@ def main():
     )
     parser.add_argument(
         "--model",
-        default="grok-4.7",
-        help="Grok model to use (default: grok-4.7)",
+        default=None,
+        help="Model ID (default: grok-4.7 for xAI, x-ai/grok-4.7 for OpenRouter)",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=["auto", "xai", "openrouter"],
+        default="auto",
+        help="API provider: xai (official), openrouter, or auto (default)",
     )
     parser.add_argument(
         "--out", "-o",
@@ -238,14 +282,23 @@ def main():
     )
     args = parser.parse_args()
 
-    client = get_client()
+    client, provider = get_client(args.provider)
+
+    # Resolve model name depending on provider
+    model = args.model
+    if not model:
+        model = "x-ai/grok-4.7" if provider == "openrouter" else "grok-4.7"
+    elif provider == "openrouter" and not model.startswith(("x-ai/", "openrouter/")):
+        if model.startswith("grok"):
+            model = f"x-ai/{model}"
+
+    print(f"Provider: {provider}  |  Model: {model}")
 
     if args.interactive or not args.description:
-        user_prompt = interactive_mode(client, args.model)
+        user_prompt = interactive_mode(client, model)
     else:
         user_prompt = args.description
 
-    # Strengthen the request
     full_user_message = f"""Build a complete Flutter application for Android and Desktop based on this description:
 
 {user_prompt}
@@ -261,12 +314,10 @@ Requirements:
 
 Start generating now."""
 
-    response = call_grok(client, full_user_message, model=args.model)
+    response = call_grok(client, full_user_message, model=model)
 
-    # Determine project name
     project_name = args.name
     if not project_name:
-        # Simple heuristic
         words = re.findall(r"[a-zA-Z0-9]+", user_prompt.lower())
         project_name = "_".join(words[:3]) if words else "flutter_app"
         project_name = re.sub(r"[^a-z0-9_]", "", project_name) or "flutter_app"
